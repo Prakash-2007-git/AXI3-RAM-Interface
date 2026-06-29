@@ -1,0 +1,287 @@
+`timescale 1ns/1ps
+
+module tb_axi_top_ram;
+
+// PARAMETERS
+
+parameter ADDR_WIDTH = 4;
+parameter DATA_WIDTH = 32;
+parameter DEPTH      = 16;
+parameter CLK_PERIOD = 10;
+
+// DUT SIGNALS
+
+reg                   aclk;
+reg                   aresetn;
+
+// Write Address Channel
+reg  [ADDR_WIDTH-1:0] s_axi_awaddr;
+reg                   s_axi_awvalid;
+wire                  s_axi_awready;
+
+// Write Data Channel
+reg  [DATA_WIDTH-1:0] s_axi_wdata;
+reg                   s_axi_wvalid;
+wire                  s_axi_wready;
+
+// Write Response Channel
+wire [1:0]            s_axi_bresp;
+wire                  s_axi_bvalid;
+reg                   s_axi_bready;
+
+// Read Address Channel
+reg  [ADDR_WIDTH-1:0] s_axi_araddr;
+reg                   s_axi_arvalid;
+wire                  s_axi_arready;
+
+// Read Data Channel
+wire [DATA_WIDTH-1:0] s_axi_rdata;
+wire [1:0]            rresp;
+wire                  s_axi_rvalid;
+reg                   s_axi_rready;
+
+// DUT INSTANTIATION
+
+axi_top_ram #(
+    .addr_width (ADDR_WIDTH),
+    .data_width (DATA_WIDTH),
+    .depth      (DEPTH)
+) dut (
+    .aclk          (aclk),
+    .aresetn       (aresetn),
+    .s_axi_awaddr  (s_axi_awaddr),
+    .s_axi_awvalid (s_axi_awvalid),
+    .s_axi_awready (s_axi_awready),
+    .s_axi_wdata   (s_axi_wdata),
+    .s_axi_wvalid  (s_axi_wvalid),
+    .s_axi_wready  (s_axi_wready),
+    .s_axi_bresp   (s_axi_bresp),
+    .s_axi_bvalid  (s_axi_bvalid),
+    .s_axi_bready  (s_axi_bready),
+    .s_axi_araddr  (s_axi_araddr),
+    .s_axi_arvalid (s_axi_arvalid),
+    .s_axi_arready (s_axi_arready),
+    .s_axi_rdata   (s_axi_rdata),
+    .rresp         (rresp),
+    .s_axi_rvalid  (s_axi_rvalid),
+    .s_axi_rready  (s_axi_rready)
+);
+
+// CLOCK
+
+initial aclk = 0;
+always #(CLK_PERIOD/2) aclk = ~aclk;
+
+// SCOREBOARD
+
+integer pass_count;
+integer fail_count;
+
+// AXI WRITE TASK
+
+task axi_write;
+    input [ADDR_WIDTH-1:0] addr;
+    input [DATA_WIDTH-1:0] data;
+    integer timeout;
+    begin
+        @(posedge aclk); #1;
+        s_axi_awaddr  = addr;
+        s_axi_awvalid = 1'b1;
+
+        timeout = 0;
+        while (!s_axi_awready && timeout < 200) begin
+            @(posedge aclk); #1;
+            timeout = timeout + 1;
+        end
+        if (timeout >= 200)
+            $display("ERROR: AWREADY timeout addr=0x%0h time=%0t", addr, $time);
+
+        @(posedge aclk); #1;
+        s_axi_awvalid = 1'b0;
+
+        s_axi_wdata  = data;
+        s_axi_wvalid = 1'b1;
+
+        timeout = 0;
+        while (!s_axi_wready && timeout < 200) begin
+            @(posedge aclk); #1;
+            timeout = timeout + 1;
+        end
+        if (timeout >= 200)
+            $display("ERROR: WREADY timeout addr=0x%0h time=%0t", addr, $time);
+
+        @(posedge aclk); #1;
+        s_axi_wvalid = 1'b0;
+
+        s_axi_bready = 1'b1;
+        timeout = 0;
+        while (!s_axi_bvalid && timeout < 200) begin
+            @(posedge aclk); #1;
+            timeout = timeout + 1;
+        end
+        if (timeout >= 200)
+            $display("ERROR: BVALID timeout addr=0x%0h time=%0t", addr, $time);
+
+        @(posedge aclk); #1;
+        s_axi_bready = 1'b0;
+
+        $display("[WRITE] addr=0x%0h  data=0x%08h  RESP=%s  time=%0t",
+                  addr, data,
+                  (s_axi_bresp == 2'b00) ? "OKAY" : "ERR",
+                  $time);
+    end
+endtask
+
+// AXI READ TASK
+
+task axi_read;
+    input  [ADDR_WIDTH-1:0] addr;
+    output [DATA_WIDTH-1:0] rdata_out;
+    integer timeout;
+    begin
+        @(posedge aclk); #1;
+        s_axi_araddr  = addr;
+        s_axi_arvalid = 1'b1;
+
+        timeout = 0;
+        while (!s_axi_arready && timeout < 200) begin
+            @(posedge aclk); #1;
+            timeout = timeout + 1;
+        end
+        if (timeout >= 200)
+            $display("ERROR: ARREADY timeout addr=0x%0h time=%0t", addr, $time);
+
+        @(posedge aclk); #1;
+        s_axi_arvalid = 1'b0;
+
+        s_axi_rready = 1'b1;
+        timeout = 0;
+        while (!s_axi_rvalid && timeout < 200) begin
+            @(posedge aclk); #1;
+            timeout = timeout + 1;
+        end
+        if (timeout >= 200)
+            $display("ERROR: RVALID timeout addr=0x%0h time=%0t", addr, $time);
+
+        rdata_out = s_axi_rdata;
+        @(posedge aclk); #1;
+        s_axi_rready = 1'b0;
+
+        $display("[READ]  addr=0x%0h  data=0x%08h  RESP=%b  time=%0t",
+                  addr, rdata_out, rresp, $time);
+    end
+endtask
+
+// CHECK TASK
+
+task check;
+    input [ADDR_WIDTH-1:0] addr;
+    input [DATA_WIDTH-1:0] got;
+    input [DATA_WIDTH-1:0] exp;
+    begin
+        if (got === exp) begin
+            $display("  PASS: addr=0x%0h  expected=0x%08h  got=0x%08h", addr, exp, got);
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  FAIL: addr=0x%0h  expected=0x%08h  got=0x%08h", addr, exp, got);
+            fail_count = fail_count + 1;
+        end
+    end
+endtask
+
+// TEST STIMULUS
+
+reg [DATA_WIDTH-1:0] rdata;
+integer i;
+
+initial begin
+    pass_count    = 0;
+    fail_count    = 0;
+
+    // Initialise all master signals
+    aresetn       = 1'b0;
+    s_axi_awaddr  = 0;
+    s_axi_awvalid = 0;
+    s_axi_wdata   = 0;
+    s_axi_wvalid  = 0;
+    s_axi_bready  = 0;
+    s_axi_araddr  = 0;
+    s_axi_arvalid = 0;
+    s_axi_rready  = 0;
+
+    repeat(5) @(posedge aclk);
+    aresetn = 1'b1;
+    repeat(3) @(posedge aclk);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 1: Single Write then Read ======");
+    axi_write(4'hA, 32'hDEAD_BEEF);
+    axi_read (4'hA, rdata);
+    check(4'hA, rdata, 32'hDEAD_BEEF);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 2: Sequential Writes (addr 0-7) ======");
+    for (i = 0; i < 8; i = i+1)
+        axi_write(i[ADDR_WIDTH-1:0], 32'hA000_0000 + i);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 3: Sequential Reads (verify TEST 2 writes) ======");
+    for (i = 0; i < 8; i = i+1) begin
+        axi_read(i[ADDR_WIDTH-1:0], rdata);
+       
+        check(i[ADDR_WIDTH-1:0], rdata, 32'hA000_0000 + i);
+    end
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 4: Overwrite address 3 ======");
+    axi_write(4'h3, 32'hCAFE_BABE);
+    axi_read (4'h3, rdata);
+    check(4'h3, rdata, 32'hCAFE_BABE);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 5: Max address boundary (0xF) ======");
+    axi_write(4'hF, 32'hFFFF_FFFF);
+    axi_read (4'hF, rdata);
+    check(4'hF, rdata, 32'hFFFF_FFFF);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 6: Zero data at address 0xB ======");
+    // NOTE: Using 0xB (not 0x0) so it doesn't overwrite TEST 2 data
+    axi_write(4'hB, 32'h0000_0000);
+    axi_read (4'hB, rdata);
+    check(4'hB, rdata, 32'h0000_0000);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 7: Re-read addr 0 (must still be 0xA0000000) ======");
+    axi_read(4'h0, rdata);
+    check(4'h0, rdata, 32'hA000_0000);
+
+    // --------------------------------------------------------
+    $display("\n====== TEST 8: Re-read addr 0xA (must still be DEADBEEF) ======");
+    axi_read(4'hA, rdata);
+    check(4'hA, rdata, 32'hDEAD_BEEF);
+
+    repeat(5) @(posedge aclk);
+
+    $display("\n============================================");
+    $display("  RESULTS: %0d PASSED  |  %0d FAILED", pass_count, fail_count);
+    $display("============================================\n");
+    $finish;
+end
+
+// WAVEFORM DUMP
+
+initial begin
+    $dumpfile("tb_axi_top_ram.vcd");
+    $dumpvars(0, tb_axi_top_ram);
+end
+
+// WATCHDOG
+
+initial begin
+    #2000000;
+    $display("WATCHDOG: simulation timeout!");
+    $finish;
+end
+
+endmodule

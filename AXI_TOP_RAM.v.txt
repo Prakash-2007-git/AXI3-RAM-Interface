@@ -1,0 +1,194 @@
+`timescale 1ns/1ps
+
+module axi_top_ram #(
+    parameter addr_width = 4,
+    parameter data_width = 32,
+    parameter depth      = 16
+)(
+    input aclk,
+    input aresetn,
+
+    // WRITE ADDRESS CHANNEL
+    input  [addr_width-1:0] s_axi_awaddr,
+    input                   s_axi_awvalid,
+    output reg              s_axi_awready,
+
+    // WRITE DATA CHANNEL
+    input  [data_width-1:0] s_axi_wdata,
+    input                   s_axi_wvalid,
+    output reg              s_axi_wready,
+
+    // WRITE RESPONSE CHANNEL
+    output reg [1:0] s_axi_bresp,
+    output reg       s_axi_bvalid,
+    input            s_axi_bready,
+
+    // READ ADDRESS CHANNEL
+    input  [addr_width-1:0] s_axi_araddr,
+    input                   s_axi_arvalid,
+    output reg              s_axi_arready,
+
+    // READ DATA CHANNEL
+    output reg [data_width-1:0] s_axi_rdata,
+    output reg [1:0]            rresp,
+    output reg                  s_axi_rvalid,
+    input                       s_axi_rready
+);
+
+localparam resp_okay = 2'b00;
+localparam IDLE  = 2'b00;
+localparam WRITE = 2'b01;
+localparam READ  = 2'b10;
+localparam RESP  = 2'b11;
+
+// FSM state and address registers
+
+reg [1:0]            write_state, read_state;
+reg [addr_width-1:0] write_addr_reg;
+reg [addr_width-1:0] read_addr_reg;
+
+// RAM signals
+
+reg                   ram_we;
+reg [addr_width-1:0]  ram_waddr;
+reg [data_width-1:0]  ram_wdata;
+reg [addr_width-1:0]  ram_raddr;
+wire [data_width-1:0] ram_rdata;
+
+// Mux: write takes priority when actively writing to RAM
+// otherwise the read address is presented
+wire [addr_width-1:0] ram_addr_mux = ram_we ? ram_waddr : ram_raddr;
+
+// RAM instantiation - single port, muxed address
+
+ram_design #(
+    .addr_width (addr_width),
+    .data_width (data_width),
+    .depth      (depth)
+) u_ram (
+    .clk   (aclk),
+    .rst_n (aresetn),
+    .wr_enb(ram_we),
+    .addr  (ram_addr_mux),
+    .wdata (ram_wdata),
+    .rdata (ram_rdata)
+);
+
+// WRITE ADDRESS CHANNEL
+
+always @(posedge aclk) begin
+    if (!aresetn) begin
+        s_axi_awready  <= 1'b0;
+        write_addr_reg <= {addr_width{1'b0}};
+        write_state    <= IDLE;
+    end else begin
+        case (write_state)
+            IDLE : begin
+                s_axi_awready <= 1'b1;
+                if (s_axi_awready && s_axi_awvalid) begin
+                    write_addr_reg <= s_axi_awaddr;
+                    s_axi_awready  <= 1'b0;
+                    write_state    <= WRITE;
+                end
+            end
+            WRITE : begin
+                if (s_axi_wvalid && s_axi_wready)
+                    write_state <= RESP;
+            end
+            RESP : begin
+                if (s_axi_bvalid && s_axi_bready)
+                    write_state <= IDLE;
+            end
+            default : write_state <= IDLE;
+        endcase
+    end
+end
+
+// WRITE DATA CHANNEL
+
+always @(posedge aclk) begin
+    if (!aresetn) begin
+        s_axi_wready <= 1'b0;
+        ram_we       <= 1'b0;
+        ram_waddr    <= {addr_width{1'b0}};
+        ram_wdata    <= {data_width{1'b0}};
+    end else begin
+        ram_we <= 1'b0;  
+        if (write_state == WRITE) begin
+            s_axi_wready <= 1'b1;
+            if (s_axi_wvalid && s_axi_wready) begin
+                ram_waddr <= write_addr_reg;
+                ram_wdata <= s_axi_wdata;
+                ram_we    <= 1'b1;  
+            end
+        end else begin
+            s_axi_wready <= 1'b0;
+        end
+    end
+end
+
+// WRITE RESPONSE CHANNEL
+
+always @(posedge aclk) begin
+    if (!aresetn) begin
+        s_axi_bvalid <= 1'b0;
+        s_axi_bresp  <= resp_okay;
+    end else begin
+        if (write_state == RESP) begin
+            s_axi_bvalid <= 1'b1;
+            s_axi_bresp  <= resp_okay;
+        end else if (s_axi_bvalid && s_axi_bready)
+            s_axi_bvalid <= 1'b0;
+    end
+end
+
+// READ ADDRESS CHANNEL
+
+always @(posedge aclk) begin
+    if (!aresetn) begin
+        s_axi_arready <= 1'b0;
+        read_addr_reg <= {addr_width{1'b0}};
+        ram_raddr     <= {addr_width{1'b0}};
+        read_state    <= IDLE;
+    end else begin
+        case (read_state)
+            IDLE : begin
+                s_axi_arready <= 1'b1;
+                if (s_axi_arready && s_axi_arvalid) begin
+                    read_addr_reg <= s_axi_araddr;
+                    ram_raddr     <= s_axi_araddr; 
+                    s_axi_arready <= 1'b0;
+                    read_state    <= READ;
+                end
+            end
+            READ : begin
+                
+                read_state <= RESP;
+            end
+            RESP : begin
+                if (s_axi_rvalid && s_axi_rready)
+                    read_state <= IDLE;
+            end
+            default : read_state <= IDLE;
+        endcase
+    end
+end
+
+// READ DATA CHANNEL
+
+always @(posedge aclk) begin
+    if (!aresetn) begin
+        s_axi_rvalid <= 1'b0;
+        s_axi_rdata  <= {data_width{1'b0}};
+        rresp        <= resp_okay;
+    end else begin
+        if (read_state == RESP && !s_axi_rvalid) begin
+            s_axi_rvalid <= 1'b1;
+            s_axi_rdata  <= ram_rdata;
+            rresp        <= resp_okay;
+        end else if (s_axi_rvalid && s_axi_rready)
+            s_axi_rvalid <= 1'b0;
+    end
+end
+
+endmodule
